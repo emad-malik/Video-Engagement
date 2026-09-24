@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data directory (parquet files & datasets)
+data/
+*.parquet
+*.csv
+
+# Spark & Java outputs
+metastore_db/
+derby.log
+*.log
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
