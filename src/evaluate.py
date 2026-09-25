@@ -40,9 +40,11 @@ def create_master_evaluation_summary(baseline_df: pd.DataFrame, classical_df: pd
                 axes[0].annotate(f"{width:.1f}%", (width + 0.3, p.get_y() + p.get_height() / 2.),
                                  ha='left', va='center', fontsize=9)
         
-        # R² comparison
+        # R2 comparison
         if "R² (log)" in plot_df.columns:
             r2_col = "R² (log)"
+        elif "R2 (log)" in plot_df.columns:
+            r2_col = "R2 (log)"
         elif "R²" in plot_df.columns:
             r2_col = "R²"
         else:
