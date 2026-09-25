@@ -19,36 +19,32 @@ BUNDLE_PATH = BASE_DIR / "models" / "dashboard_bundle.joblib"
 # ────────────────────────────────────────────────────────────────
 TIER_DEFINITIONS = [
     {
-        "tier": "Dud / Cold Start",
+        "tier": "Low Reach (<1K views)",
         "min_incr": 0,
         "max_incr": 1000,
         "badge": "gray",
-        "icon": "❄️",
-        "description": "Fails to exit seed audience. Below baseline algorithmic pickup."
+        "description": "Remains within initial test viewers. Did not get picked up by the recommendation algorithm."
     },
     {
-        "tier": "Core / Steady Organic",
+        "tier": "Average Reach (1K - 15K views)",
         "min_incr": 1000,
         "max_incr": 15000,
         "badge": "blue",
-        "icon": "🌱",
-        "description": "Solid core performance. Circulates within regular follower/niche feeds."
+        "description": "Solid baseline performance. Circulates normally among your followers and topic feeds."
     },
     {
-        "tier": "Breakout Contender",
+        "tier": "High Growth (15K - 100K views)",
         "min_incr": 15000,
         "max_incr": 100000,
         "badge": "purple",
-        "icon": "🔥",
-        "description": "Pushed to broader For You Page (FYP). Strong algorithmic retention."
+        "description": "Pushed to broader For You feeds with strong viewer retention."
     },
     {
-        "tier": "Mega-Viral Hit",
+        "tier": "Viral Hit (100K+ views)",
         "min_incr": 100000,
         "max_incr": float("inf"),
         "badge": "gold",
-        "icon": "🚀",
-        "description": "Top 1-2% platform virality. High cross-network sharing and exponential loop."
+        "description": "Top-tier breakout content with heavy sharing and exponential reach."
     }
 ]
 
@@ -284,7 +280,6 @@ def run_prediction_pipeline(user_inputs: dict, bundle: dict) -> dict:
         "total_expected": total_expected,
         "tier": tier_info["tier"],
         "tier_badge": tier_info["badge"],
-        "tier_icon": tier_info["icon"],
         "tier_desc": tier_info["description"],
         "decay_ratio": row["decay_ratio_val"],
         "velocity_1_3": v13,
@@ -299,7 +294,7 @@ def evaluate_triage_action(plays_day0: float, plays_day1: float, plays_day3: flo
                            likes_day3: float, pred_incr: float) -> dict:
     """
     Automated Creator Decision Engine:
-    Determines whether marketing team should DOUBLE DOWN, HOLD ORGANIC, or CUT LOSSES.
+    Determines whether marketing team should BOOST WITH ADS, LET GROW ORGANICALLY, or RETHINK CONCEPT.
     """
     v01 = max(0, plays_day1 - plays_day0)
     v13 = max(0, (plays_day3 - plays_day1) / 2.0)
@@ -308,7 +303,6 @@ def evaluate_triage_action(plays_day0: float, plays_day1: float, plays_day3: flo
     like_rate = likes_day3 / (plays_day3 + 1.0)
 
     # Scoring metric (0 to 100)
-    # Higher score = stronger recommendation to double down
     score = 40.0
     if decay_ratio > 1.25:
         score += 25
@@ -335,28 +329,28 @@ def evaluate_triage_action(plays_day0: float, plays_day1: float, plays_day3: flo
     score = max(5.0, min(99.0, score))
 
     if score >= 70:
-        status = "🚀 DOUBLE DOWN (High Priority)"
+        status = "Boost with Paid Budget (High Priority)"
         color = "#10b981"  # Emerald Green
         recommendation = (
-            "**Algorithm Wave Detected**: Trajectory is showing strong velocity persistence with low decay. "
-            "**Action**: Allocate TikTok Spark Ads / paid boost budget immediately. Pin video to profile header. "
-            "Script and record Part 2 continuation within 24-48 hours while audience interest is primed."
+            "Strong audience interest detected. Viewers are watching and engaging at above-average rates. "
+            "Action Plan: Put paid boost budget behind this video today. Pin it to the top of your profile. "
+            "Plan and record a follow-up video or Part 2 within 48 hours to capitalize on the audience momentum."
         )
     elif score >= 45:
-        status = "⚖️ ORGANIC MOMENTUM (Monitor & Engage)"
+        status = "Let Grow Organically (Steady Momentum)"
         color = "#3b82f6"  # Blue
         recommendation = (
-            "**Healthy Baseline**: Video is tracking on a consistent organic decay curve. "
-            "**Action**: Actively reply to top comments to spur second-wave rewatch loops. "
-            "Do not spend ad budget yet; reassess trajectory at Day 7 milestone."
+            "Video is performing consistently with healthy organic viewership. "
+            "Action Plan: Reply to top comments to keep viewer conversations active and encourage shares. "
+            "Keep paid ad budget in reserve for now and check back in a few days."
         )
     else:
-        status = "⚠️ CUT LOSSES / RE-HOOK (Low Priority)"
+        status = "Rethink Concept / Low Momentum"
         color = "#ef4444"  # Red
         recommendation = (
-            "**Decelerating Rapidly**: Sharp drop-off indicates early audience friction or hook fatigue. "
-            "**Action**: Do not spend paid ad dollars on this video. Review viewer retention drop in first 3 seconds, "
-            "re-test hook variations on your next upload, and move creative focus to new concepts."
+            "Views are slowing down quickly after upload. "
+            "Action Plan: Do not spend ad money on this video. Review where viewers dropped off in the first 3 seconds, "
+            "tweak the opening hook for your next video, and move your focus to new content ideas."
         )
 
     return {
