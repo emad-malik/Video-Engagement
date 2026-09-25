@@ -1,62 +1,77 @@
+import logging
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, median_absolute_error, r2_score
 
-def compute_metrics(y_true, y_pred):
-    """Compute standard metrics: MAE, RMSE, and WAPE (Weighted Absolute Percentage Error)."""
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """
+    Compute a robust metric suite for heterogeneous engagement data:
+      - MAE, MedAE (outlier-robust), RMSE
+      - WAPE (Weighted Absolute Percentage Error)
+      - sMAPE (Symmetric Mean Absolute Percentage Error)
+      - R²
+    """
     y_true = np.array(y_true, dtype=float)
     y_pred = np.array(y_pred, dtype=float)
     
     mae = mean_absolute_error(y_true, y_pred)
+    medae = median_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    r2 = r2_score(y_true, y_pred) if len(y_true) > 1 else np.nan
     
-    # Avoid zero division with WAPE
+    # WAPE
     denom = np.sum(np.abs(y_true))
-    wape = np.sum(np.abs(y_true - y_pred)) / denom if denom > 0 else np.nan
+    wape = (np.sum(np.abs(y_true - y_pred)) / denom * 100) if denom > 0 else np.nan
     
-    # Standard MAPE with small epsilon
-    mape = np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + 1.0))) * 100
+    # Symmetric MAPE (handles zeros gracefully)
+    smape_denom = np.abs(y_true) + np.abs(y_pred) + 1.0
+    smape = np.mean(2.0 * np.abs(y_true - y_pred) / smape_denom) * 100
     
-    return {"MAE": mae, "RMSE": rmse, "MAPE (%)": mape, "WAPE (%)": wape * 100}
+    return {"MAE": mae, "MedAE": medae, "RMSE": rmse, "WAPE (%)": wape, "sMAPE (%)": smape, "R²": r2}
 
-def run_baselines(df_30d):
+def run_baselines(df_30d: pd.DataFrame) -> pd.DataFrame:
     """
-    Evaluate Naive & Moving Average baselines on video 30-day engagement prediction.
+    V2 baselines on the INCREMENTAL target (plays gained from day 3 -> day 30).
+    
+    Baselines:
+    1. Mean Baseline - predict the training-set mean incremental gain for every video
+    2. Day-3 Level Proportional - predict incremental gain = fraction of day-3 plays
+    3. Velocity Extrapolation - use day 1->3 velocity to linearly extrapolate 27 more days
     """
-    print("--- STEP 5: Baseline Models & Benchmarks ---")
+    logger.info("--- Baselines: Evaluating on Incremental Plays (Day 3->30) ---")
     
-    y_true = df_30d["target_plays_30d"].fillna(0)
+    y_true = df_30d["incr_plays_3_30"].fillna(0).values
     
-    # Baseline 1: Naive Day 1 extrapolation (predict 30-day plays = day 1 plays * scale factor)
-    # Median growth from day 1 to day 30 across dataset
-    ratio_day1 = (df_30d["target_plays_30d"] / (df_30d["plays_day1"] + 1.0)).median()
-    pred_naive_day1 = (df_30d["plays_day1"] * ratio_day1).fillna(0)
+    # Baseline 1: Mean predictor
+    pred_mean = np.full_like(y_true, fill_value=np.mean(y_true))
     
-    # Baseline 2: Naive Day 3 extrapolation
-    ratio_day3 = (df_30d["target_plays_30d"] / (df_30d["plays_day3"] + 1.0)).median()
-    pred_naive_day3 = (df_30d["plays_day3"] * ratio_day3).fillna(0)
+    # Baseline 2: Day-3 proportional (learn median ratio of incr_gain / day3_plays from data)
+    plays_day3 = df_30d["plays_day3"].fillna(0).values
+    ratios = y_true / (plays_day3 + 1.0)
+    median_ratio = np.median(ratios)
+    pred_proportional = plays_day3 * median_ratio
     
-    # Baseline 3: Simple Mean Predictor
-    pred_mean = np.full_like(y_true, fill_value=y_true.mean())
-
-    metrics_day1 = compute_metrics(y_true, pred_naive_day1)
-    metrics_day3 = compute_metrics(y_true, pred_naive_day3)
-    metrics_mean = compute_metrics(y_true, pred_mean)
-
+    # Baseline 3: Velocity extrapolation
+    # velocity_1_3 = (plays_day3 - plays_day1) / 2 days -> extrapolate for 27 more days
+    velocity = df_30d["velocity_1_3"].fillna(0).values
+    pred_velocity = np.clip(velocity * 27.0, 0, None)  # 27 days remaining from day 3 to day 30
+    
     results = pd.DataFrame([
-        {"Model": "Mean Baseline", **metrics_mean},
-        {"Model": "Naive Extrapolation (Day 1 Signal)", **metrics_day1},
-        {"Model": "Naive Extrapolation (Day 3 Signal)", **metrics_day3}
+        {"Model": "Mean Baseline", **compute_metrics(y_true, pred_mean)},
+        {"Model": "Day-3 Proportional", **compute_metrics(y_true, pred_proportional)},
+        {"Model": "Velocity Extrapolation (Day 1->3)", **compute_metrics(y_true, pred_velocity)}
     ])
     
-    print("\nBaseline Evaluation Results:")
+    logger.info("Baseline Results (Incremental Plays Day 3->30):")
     print(results.to_string(index=False))
     return results
 
 if __name__ == "__main__":
     import os
-    DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-    video_30d_path = os.path.join(DATA_DIR, "processed_video_30d.parquet")
-    if os.path.exists(video_30d_path):
-        df_30d = pd.read_parquet(video_30d_path)
+    from src.config import PROCESSED_VIDEO_30D
+    if os.path.exists(PROCESSED_VIDEO_30D):
+        df_30d = pd.read_parquet(PROCESSED_VIDEO_30D)
         run_baselines(df_30d)

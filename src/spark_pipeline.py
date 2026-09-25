@@ -81,37 +81,18 @@ def clean_and_prepare_data(videos_df, engagement_df, creator_df):
 
     return full_df
 
-def create_window_features(full_df):
-    """Create window features (lags, rolling averages, daily growth) per video trajectory."""
-    logger.info("--- PySpark: Feature Engineering & Window Aggregations ---")
-    
-    video_window = Window.partitionBy("video_id").orderBy("days_since_post")
-
-    df_feat = full_df \
-        .withColumn("play_count_lag1", F.lag("play_count", 1).over(video_window)) \
-        .withColumn("play_count_lag3", F.lag("play_count", 3).over(video_window)) \
-        .withColumn("play_count_lag7", F.lag("play_count", 7).over(video_window)) \
-        .withColumn("like_count_lag1", F.lag("like_count", 1).over(video_window))
-    
-    roll_3 = Window.partitionBy("video_id").orderBy("days_since_post").rowsBetween(-3, -1)
-    roll_7 = Window.partitionBy("video_id").orderBy("days_since_post").rowsBetween(-7, -1)
-    
-    df_feat = df_feat \
-        .withColumn("play_count_roll3_avg", F.avg("play_count").over(roll_3)) \
-        .withColumn("play_count_roll7_avg", F.avg("play_count").over(roll_7))
-
-    df_feat = df_feat \
-        .withColumn("daily_play_inc", F.col("play_count") - F.coalesce(F.col("play_count_lag1"), F.lit(0))) \
-        .withColumn("daily_play_growth", (F.col("daily_play_inc")) / (F.coalesce(F.col("play_count_lag1"), F.lit(0)) + F.lit(1.0))) \
-        .withColumn("day_of_week", F.dayofweek("date")) \
-        .withColumn("is_weekend", F.when(F.col("day_of_week").isin([1, 7]), 1).otherwise(0))
-
-    return df_feat
-
 def create_video_30d_summary(full_df):
-    """Extract early trajectory features and target 30-day cumulative engagement for each video."""
-    logger.info("--- PySpark: Building Video-level 30-Day Summary Table ---")
+    """
+    Build per-video summary with:
+    - Cumulative counters at days 0, 1, 3, 7, 30
+    - INCREMENTAL targets (day3->day30 gain) - the V2 primary target
+    - Velocity & acceleration features
+    - Engagement quality ratios (likes/plays, comments/plays, shares/plays)
+    - Creator-level panel features (historical median performance)
+    """
+    logger.info("--- PySpark: Building Video-level 30-Day Summary Table (V2) ---")
 
+    # Pivot cumulative engagement at key snapshot days
     pivoted = full_df.filter(F.col("days_since_post").isin([0, 1, 3, 7, 30])) \
         .groupBy("video_id") \
         .pivot("days_since_post", [0, 1, 3, 7, 30]) \
@@ -123,16 +104,52 @@ def create_video_30d_summary(full_df):
         )
 
     cols_rename = {
-        "0_plays": "plays_day0", "1_plays": "plays_day1", "3_plays": "plays_day3", "7_plays": "plays_day7", "30_plays": "target_plays_30d",
-        "0_likes": "likes_day0", "1_likes": "likes_day1", "3_likes": "likes_day3", "7_likes": "likes_day7", "30_likes": "target_likes_30d",
-        "0_comments": "comments_day0", "1_comments": "comments_day1", "3_comments": "comments_day3", "30_comments": "target_comments_30d",
-        "0_shares": "shares_day0", "1_shares": "shares_day1", "3_shares": "shares_day3", "30_shares": "target_shares_30d"
+        "0_plays": "plays_day0", "1_plays": "plays_day1", "3_plays": "plays_day3", "7_plays": "plays_day7", "30_plays": "plays_day30",
+        "0_likes": "likes_day0", "1_likes": "likes_day1", "3_likes": "likes_day3", "7_likes": "likes_day7", "30_likes": "likes_day30",
+        "0_comments": "comments_day0", "1_comments": "comments_day1", "3_comments": "comments_day3", "7_comments": "comments_day7", "30_comments": "comments_day30",
+        "0_shares": "shares_day0", "1_shares": "shares_day1", "3_shares": "shares_day3", "7_shares": "shares_day7", "30_shares": "shares_day30"
     }
-
     for orig, new_name in cols_rename.items():
         if orig in pivoted.columns:
             pivoted = pivoted.withColumnRenamed(orig, new_name)
 
+    # ── V2 FIX: Incremental targets (day 3 -> day 30 gain) ──
+    pivoted = pivoted \
+        .withColumn("incr_plays_3_30",  F.col("plays_day30") - F.col("plays_day3")) \
+        .withColumn("incr_likes_3_30",  F.col("likes_day30") - F.col("likes_day3")) \
+        .withColumn("incr_comments_3_30", F.col("comments_day30") - F.col("comments_day3")) \
+        .withColumn("incr_shares_3_30",  F.col("shares_day30") - F.col("shares_day3"))
+
+    # Growth multiplier: log(day30 / (day3 + 1))
+    pivoted = pivoted \
+        .withColumn("growth_factor_plays", F.log1p(F.col("plays_day30")) - F.log1p(F.col("plays_day3")))
+
+    # ── V2: Velocity & Acceleration features ──
+    # Guard all divisions against zero denominators (Spark ANSI mode throws on /0)
+    velocity_0_1_expr = F.coalesce(F.col("plays_day1"), F.lit(0)) - F.coalesce(F.col("plays_day0"), F.lit(0))
+    velocity_1_3_expr = (F.coalesce(F.col("plays_day3"), F.lit(0)) - F.coalesce(F.col("plays_day1"), F.lit(0))) / F.lit(2.0)
+    
+    # decay_ratio denominator can be zero when day0==day1; use F.when to guard
+    decay_denom = velocity_0_1_expr + F.lit(1.0)
+    safe_decay_ratio = F.when(
+        F.abs(decay_denom) < F.lit(0.001), F.lit(0.0)
+    ).otherwise(velocity_1_3_expr / decay_denom)
+    
+    pivoted = pivoted \
+        .withColumn("velocity_0_1", velocity_0_1_expr) \
+        .withColumn("velocity_1_3", velocity_1_3_expr) \
+        .withColumn("acceleration", velocity_1_3_expr - velocity_0_1_expr) \
+        .withColumn("decay_ratio", safe_decay_ratio)
+
+    # ── V2: Engagement quality ratios at day 3 ──
+    # Use F.greatest to ensure denominator is always >= 1
+    safe_plays_denom = F.greatest(F.coalesce(F.col("plays_day3"), F.lit(0)) + F.lit(1.0), F.lit(1.0))
+    pivoted = pivoted \
+        .withColumn("like_rate_day3", F.coalesce(F.col("likes_day3"), F.lit(0)) / safe_plays_denom) \
+        .withColumn("comment_rate_day3", F.coalesce(F.col("comments_day3"), F.lit(0)) / safe_plays_denom) \
+        .withColumn("share_rate_day3", F.coalesce(F.col("shares_day3"), F.lit(0)) / safe_plays_denom)
+
+    # Static metadata per video at day 0
     meta = full_df.filter(F.col("days_since_post") == 0).select(
         "video_id", "author_id", "create_date", "topic", "duration", "is_english",
         "joy", "disgust", "sadness", "anger", "surprise", "fear",
@@ -140,6 +157,20 @@ def create_video_30d_summary(full_df):
     ).dropDuplicates(["video_id"])
 
     summary_30d = meta.join(pivoted, on="video_id", how="inner")
+
+    # ── V2: Creator-level panel features ──
+    # Compute per-creator historical median plays at day 30 (proxy for creator quality)
+    creator_stats = summary_30d.groupBy("author_id").agg(
+        F.expr("percentile_approx(plays_day30, 0.5)").alias("creator_median_plays30"),
+        F.count("video_id").alias("creator_video_count"),
+        F.avg("plays_day30").alias("creator_avg_plays30")
+    )
+    summary_30d = summary_30d.join(creator_stats, on="author_id", how="left")
+
+    # Penetration rate: day3 plays relative to follower count
+    summary_30d = summary_30d \
+        .withColumn("penetration_rate", F.col("plays_day3") / (F.col("follower_count") + F.lit(1.0)))
+
     return summary_30d
 
 def create_topic_daily_timeseries(full_df):
@@ -166,7 +197,6 @@ def run_pipeline():
     logger.info(f"Raw Creator Daily Count: {creator_df.count():,}")
     
     full_df = clean_and_prepare_data(videos_df, engagement_df, creator_df)
-    _ = create_window_features(full_df)
     
     summary_30d = create_video_30d_summary(full_df)
     topic_ts = create_topic_daily_timeseries(full_df)

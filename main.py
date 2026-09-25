@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="TikTok 30-Day Video Engagement Prediction Pipeline")
+    parser = argparse.ArgumentParser(description="TikTok 30-Day Video Engagement Prediction Pipeline (V2)")
     parser.add_argument("--download", action="store_true", help="Download raw parquet dataset from Hugging Face")
     parser.add_argument("--etl", action="store_true", help="Run PySpark ETL & feature aggregation pipeline")
     parser.add_argument("--eda", action="store_true", help="Run Exploratory Data Analysis & visual diagnostics")
@@ -33,7 +33,7 @@ def main():
         args.all = True
 
     logger.info("=========================================================================")
-    logger.info("  TikTok Creator and Video Engagement (200K) - 30-Day Engagement Pipeline")
+    logger.info("  TikTok Engagement Prediction Pipeline - V2 (Incremental Target)")
     logger.info("=========================================================================\n")
 
     if args.all or args.download:
@@ -41,7 +41,7 @@ def main():
         download_all_data()
 
     if args.all or args.etl:
-        logger.info("[2/5] Running PySpark Data Processing & Feature Pipeline...")
+        logger.info("[2/5] Running PySpark Data Processing & Feature Pipeline (V2)...")
         run_pipeline()
 
     if args.all or args.eda:
@@ -57,25 +57,30 @@ def main():
         df_30d = pd.read_parquet(PROCESSED_VIDEO_30D)
         df_topic = pd.read_parquet(PROCESSED_TOPIC_DAILY)
 
-        logger.info("Evaluating Baseline Benchmarks...")
+        logger.info("Evaluating Baselines (Incremental Target)...")
         baseline_df = run_baselines(df_30d)
 
-        logger.info("Evaluating Classical Time Series Models (SARIMA / Prophet)...")
+        logger.info("Evaluating Classical Time Series (Track B: Aggregate)...")
         classical_df = run_classical_models(df_topic)
 
-        logger.info("Evaluating Machine Learning Models (LightGBM, GBT, Ridge)...")
+        logger.info("Evaluating ML Models (Track A: Per-Video Incremental)...")
         ml_df = run_ml_models(df_30d)
 
-        logger.info("[5/5] Generating Master Model Evaluation Summary & Charts...")
-        master_df = create_master_evaluation_summary(baseline_df, classical_df, ml_df)
+        logger.info("[5/5] Generating V2 Evaluation Summary & Charts...")
+        track_a, track_b = create_master_evaluation_summary(baseline_df, classical_df, ml_df)
         
-        print("\n=======================================================")
-        print(" MASTER MODEL PERFORMANCE BENCHMARK (TikTok 30d Plays) ")
-        print("=======================================================")
-        print(master_df.to_string(index=False))
+        print("\n" + "=" * 72)
+        print("  TRACK A: Per-Video Incremental Engagement (Day 3->30)")
+        print("=" * 72)
+        print(track_a.to_string(index=False))
+        
+        print("\n" + "=" * 72)
+        print("  TRACK B: Aggregate Time-Series Forecast (Avg Plays/Video)")
+        print("=" * 72)
+        print(track_b.to_string(index=False))
 
     logger.info("\n=========================================================================")
-    logger.info("  SUCCESS! Execution completed cleanly.")
+    logger.info("  SUCCESS! V2 Pipeline completed.")
     logger.info("=========================================================================")
 
 if __name__ == "__main__":

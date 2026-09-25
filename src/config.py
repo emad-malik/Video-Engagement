@@ -21,8 +21,14 @@ DATASET_FILES = {
 PROCESSED_VIDEO_30D = DATA_DIR / "processed_video_30d.parquet"
 PROCESSED_TOPIC_DAILY = DATA_DIR / "processed_topic_daily.parquet"
 
+# Observation cutoff: features are built from days 0-3, target is incremental gain day 3->30
+OBSERVATION_CUTOFF_DAY = 3
+
 # Model Hyperparameters & Settings
 RANDOM_STATE = 42
 TRAIN_SPLIT_RATIO = 0.8
 SPARK_DRIVER_MEMORY = "4g"
 SPARK_SHUFFLE_PARTITIONS = "8"
+
+# Time-series cross-validation
+N_CV_FOLDS = 5
