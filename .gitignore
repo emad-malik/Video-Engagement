@@ -27,3 +27,10 @@ env/
 
 # Jupyter Notebook Checkpoints
 .ipynb_checkpoints/
+
+# Trained Models & Serialized Bundles
+models/
+*.joblib
+*.pkl
+*.bin
+
