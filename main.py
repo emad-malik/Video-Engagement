@@ -17,12 +17,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="TikTok 30-Day Video Engagement Prediction Pipeline (V2)")
+    parser = argparse.ArgumentParser(description="TikTok 30-Day Video Engagement Prediction Pipeline (V3)")
     parser.add_argument("--download", action="store_true", help="Download raw parquet dataset from Hugging Face")
     parser.add_argument("--etl", action="store_true", help="Run PySpark ETL & feature aggregation pipeline")
     parser.add_argument("--eda", action="store_true", help="Run Exploratory Data Analysis & visual diagnostics")
     parser.add_argument("--train", action="store_true", help="Train and evaluate classical & ML models")
     parser.add_argument("--all", action="store_true", help="Execute full end-to-end pipeline")
+    parser.add_argument("--model", type=str, default="best",
+                        choices=["best", "all", "lgbm_mape", "lgbm_quantile", "lgbm_mse", "elasticnet", "rf"],
+                        help="Select which ML model to train (default: 'best' -> LightGBM MAPE)")
+    parser.add_argument("--skip-classical", action="store_true",
+                        help="Skip aggregate classical models (Prophet/SARIMA) for rapid ML iteration")
     return parser.parse_args()
 
 def main():
@@ -33,7 +38,7 @@ def main():
         args.all = True
 
     logger.info("=========================================================================")
-    logger.info("  TikTok Engagement Prediction Pipeline - V2 (Incremental Target)")
+    logger.info("  TikTok Engagement Prediction Pipeline - V3 (Incremental Target)")
     logger.info("=========================================================================\n")
 
     if args.all or args.download:
@@ -41,7 +46,7 @@ def main():
         download_all_data()
 
     if args.all or args.etl:
-        logger.info("[2/5] Running PySpark Data Processing & Feature Pipeline (V2)...")
+        logger.info("[2/5] Running PySpark Data Processing & Feature Pipeline (V3)...")
         run_pipeline()
 
     if args.all or args.eda:
@@ -60,11 +65,15 @@ def main():
         logger.info("Evaluating Baselines (Incremental Target)...")
         baseline_df = run_baselines(df_30d)
 
-        logger.info("Evaluating Classical Time Series (Track B: Aggregate)...")
-        classical_df = run_classical_models(df_topic)
+        classical_df = None
+        if not args.skip_classical:
+            logger.info("Evaluating Classical Time Series (Track B: Aggregate)...")
+            classical_df = run_classical_models(df_topic)
+        else:
+            logger.info("Skipping Classical Time Series (--skip-classical enabled)...")
 
-        logger.info("Evaluating ML Models (Track A: Per-Video Incremental)...")
-        ml_df = run_ml_models(df_30d)
+        logger.info(f"Evaluating ML Models (Track A: Per-Video Incremental) [Selection: '{args.model}']...")
+        ml_df = run_ml_models(df_30d, model_selection=args.model)
 
         logger.info("[5/5] Generating V2 Evaluation Summary & Charts...")
         track_a, track_b = create_master_evaluation_summary(baseline_df, classical_df, ml_df)

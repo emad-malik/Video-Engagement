@@ -238,16 +238,17 @@ def expanding_window_cv(X, y, dates, n_folds=N_CV_FOLDS):
 # V3 Model Training
 # ────────────────────────────────────────────────────────────────
 
-def run_ml_models(df_30d: pd.DataFrame) -> pd.DataFrame:
+def run_ml_models(df_30d: pd.DataFrame, model_selection: str = "best") -> pd.DataFrame:
     """
     V3 ML pipeline - optimizes sMAPE:
     - Full V3 feature set (rank, day-7, target encoding, temporal, imputed text)
+    - model_selection: 'best' (LightGBM MAPE only), 'all' (all 5 models), or individual model name
     - LightGBM with objective='mape' (closest to sMAPE)
     - Optuna hyperparameter optimization on sMAPE
     - LightGBM Quantile for confidence intervals
     - Spearman analysis on new features
     """
-    logger.info("--- ML Models V3: sMAPE-Optimized Incremental Engagement Prediction ---")
+    logger.info(f"--- ML Models V3: sMAPE-Optimized Prediction [Mode: {model_selection}] ---")
     
     # ── Spearman Monotonic Correlation Analysis ──
     run_spearman_analysis(df_30d)
@@ -287,113 +288,134 @@ def run_ml_models(df_30d: pd.DataFrame) -> pd.DataFrame:
 
     results = []
 
-    # ── 1. LightGBM MAPE objective (directly minimizes MAPE ~= sMAPE) ──
+    # Map model selection aliases
+    valid_models = {"lgbm_mape", "lgbm_quantile", "lgbm_mse", "elasticnet", "rf"}
+    if model_selection in ("best", "lgbm_mape"):
+        models_to_run = {"lgbm_mape"}
+    elif model_selection == "all":
+        models_to_run = valid_models
+    elif isinstance(model_selection, (list, set, tuple)):
+        models_to_run = set(model_selection)
+    elif model_selection in valid_models:
+        models_to_run = {model_selection}
+    else:
+        logger.warning(f"Unknown model_selection '{model_selection}', defaulting to 'best' (lgbm_mape)")
+        models_to_run = {"lgbm_mape"}
+
+    logger.info(f"Models selected for training: {sorted(list(models_to_run))}")
+
+    # ── 1. LightGBM MAPE objective (directly minimizes MAPE ~= sMAPE) [BEST MODEL] ──
     lgb_mape = None
-    try:
-        import lightgbm as lgb
-
-        val_cut = int(len(X_train) * 0.85)
-        X_tr, y_tr = X_train.iloc[:val_cut], y_train.iloc[:val_cut]
-        X_val, y_val = X_train.iloc[val_cut:], y_train.iloc[val_cut:]
-
-        # ── Optuna hyperparameter search ──
+    if "lgbm_mape" in models_to_run:
         try:
-            import optuna
-            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            import lightgbm as lgb
 
-            def objective(trial):
-                params = {
-                    "objective": "mape",
-                    "n_estimators": trial.suggest_int("n_estimators", 200, 1000),
-                    "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
-                    "num_leaves": trial.suggest_int("num_leaves", 31, 127),
-                    "min_child_samples": trial.suggest_int("min_child_samples", 20, 100),
-                    "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-                    "random_state": RANDOM_STATE,
-                    "n_jobs": -1,
-                    "verbose": -1,
-                }
-                m = lgb.LGBMRegressor(**params)
-                m.fit(X_tr, y_tr)
-                pred = np.clip(np.expm1(m.predict(X_val)), 0, None)
-                y_val_orig = np.expm1(y_val.values)
-                return smape(y_val_orig, pred)
+            val_cut = int(len(X_train) * 0.85)
+            X_tr, y_tr = X_train.iloc[:val_cut], y_train.iloc[:val_cut]
+            X_val, y_val = X_train.iloc[val_cut:], y_train.iloc[val_cut:]
 
-            study = optuna.create_study(direction="minimize")
-            study.optimize(objective, n_trials=30, show_progress_bar=False)
-            best = study.best_params
-            logger.info(f"Optuna best sMAPE: {study.best_value:.2f}% | params: {best}")
+            # ── Optuna hyperparameter search ──
+            try:
+                import optuna
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-            lgb_mape = lgb.LGBMRegressor(**best, objective="mape",
-                                          random_state=RANDOM_STATE, n_jobs=-1, verbose=-1)
-        except ImportError:
-            logger.warning("Optuna not installed, using default params")
-            lgb_mape = lgb.LGBMRegressor(
-                objective="mape", n_estimators=500, learning_rate=0.05, num_leaves=63,
+                def objective(trial):
+                    params = {
+                        "objective": "mape",
+                        "n_estimators": trial.suggest_int("n_estimators", 200, 1000),
+                        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                        "num_leaves": trial.suggest_int("num_leaves", 31, 127),
+                        "min_child_samples": trial.suggest_int("min_child_samples", 20, 100),
+                        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+                        "random_state": RANDOM_STATE,
+                        "n_jobs": -1,
+                        "verbose": -1,
+                    }
+                    m = lgb.LGBMRegressor(**params)
+                    m.fit(X_tr, y_tr)
+                    pred = np.clip(np.expm1(m.predict(X_val)), 0, None)
+                    y_val_orig = np.expm1(y_val.values)
+                    return smape(y_val_orig, pred)
+
+                study = optuna.create_study(direction="minimize")
+                study.optimize(objective, n_trials=30, show_progress_bar=False)
+                best = study.best_params
+                logger.info(f"Optuna best sMAPE: {study.best_value:.2f}% | params: {best}")
+
+                lgb_mape = lgb.LGBMRegressor(**best, objective="mape",
+                                              random_state=RANDOM_STATE, n_jobs=-1, verbose=-1)
+            except ImportError:
+                logger.warning("Optuna not installed, using default params")
+                lgb_mape = lgb.LGBMRegressor(
+                    objective="mape", n_estimators=500, learning_rate=0.05, num_leaves=63,
+                    min_child_samples=50, subsample=0.8, colsample_bytree=0.8,
+                    random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
+                )
+
+            lgb_mape.fit(X_train, y_train)
+            pred_mape = lgb_mape.predict(X_test)
+            results.append({"Model": "LightGBM (MAPE obj)", **evaluate_predictions(y_test, pred_mape)})
+            logger.info(f"LightGBM MAPE obj: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+
+        except Exception as e:
+            logger.warning(f"LightGBM MAPE failed: {e}")
+
+    # ── 2. LightGBM Quantile (median) ──
+    if "lgbm_quantile" in models_to_run:
+        try:
+            import lightgbm as lgb
+            logger.info("Training LightGBM Quantile (median)...")
+            lgb_q50 = lgb.LGBMRegressor(
+                objective="quantile", alpha=0.5,
+                n_estimators=500, learning_rate=0.05, num_leaves=63,
                 min_child_samples=50, subsample=0.8, colsample_bytree=0.8,
                 random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
             )
-
-        lgb_mape.fit(X_train, y_train)
-        pred_mape = lgb_mape.predict(X_test)
-        results.append({"Model": "LightGBM (MAPE obj)", **evaluate_predictions(y_test, pred_mape)})
-        logger.info(f"LightGBM MAPE obj: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
-
-    except Exception as e:
-        logger.warning(f"LightGBM MAPE failed: {e}")
-
-    # ── 2. LightGBM Quantile (median) ──
-    try:
-        import lightgbm as lgb
-        logger.info("Training LightGBM Quantile (median)...")
-        lgb_q50 = lgb.LGBMRegressor(
-            objective="quantile", alpha=0.5,
-            n_estimators=500, learning_rate=0.05, num_leaves=63,
-            min_child_samples=50, subsample=0.8, colsample_bytree=0.8,
-            random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
-        )
-        lgb_q50.fit(X_train, y_train)
-        pred_q50 = lgb_q50.predict(X_test)
-        results.append({"Model": "LightGBM Quantile (Median)", **evaluate_predictions(y_test, pred_q50)})
-        logger.info(f"LightGBM Quantile: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
-    except Exception as e:
-        logger.warning(f"LightGBM Quantile failed: {e}")
+            lgb_q50.fit(X_train, y_train)
+            pred_q50 = lgb_q50.predict(X_test)
+            results.append({"Model": "LightGBM Quantile (Median)", **evaluate_predictions(y_test, pred_q50)})
+            logger.info(f"LightGBM Quantile: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+        except Exception as e:
+            logger.warning(f"LightGBM Quantile failed: {e}")
 
     # ── 3. LightGBM standard (baseline comparison) ──
-    try:
-        import lightgbm as lgb
-        logger.info("Training LightGBM standard (comparison)...")
-        lgb_std = lgb.LGBMRegressor(
-            n_estimators=500, learning_rate=0.05, num_leaves=63,
-            min_child_samples=50, subsample=0.8, colsample_bytree=0.8,
-            random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
-        )
-        lgb_std.fit(X_train, y_train)
-        pred_std = lgb_std.predict(X_test)
-        results.append({"Model": "LightGBM (MSE obj)", **evaluate_predictions(y_test, pred_std)})
-        logger.info(f"LightGBM MSE: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
-    except Exception as e:
-        logger.warning(f"LightGBM standard failed: {e}")
+    if "lgbm_mse" in models_to_run:
+        try:
+            import lightgbm as lgb
+            logger.info("Training LightGBM standard (comparison)...")
+            lgb_std = lgb.LGBMRegressor(
+                n_estimators=500, learning_rate=0.05, num_leaves=63,
+                min_child_samples=50, subsample=0.8, colsample_bytree=0.8,
+                random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
+            )
+            lgb_std.fit(X_train, y_train)
+            pred_std = lgb_std.predict(X_test)
+            results.append({"Model": "LightGBM (MSE obj)", **evaluate_predictions(y_test, pred_std)})
+            logger.info(f"LightGBM MSE: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+        except Exception as e:
+            logger.warning(f"LightGBM standard failed: {e}")
 
     # ── 4. ElasticNet with log-pred clipping fix ──
-    logger.info("Training ElasticNet (scaled, clipped)...")
-    enet_pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("model", ElasticNet(alpha=0.01, l1_ratio=0.5, random_state=RANDOM_STATE, max_iter=5000))
-    ])
-    enet_pipe.fit(X_train, y_train)
-    pred_enet = np.clip(enet_pipe.predict(X_test), -1, 25)  # clip in log space
-    results.append({"Model": "ElasticNet (Scaled, Clipped)", **evaluate_predictions(y_test, pred_enet)})
+    if "elasticnet" in models_to_run:
+        logger.info("Training ElasticNet (scaled, clipped)...")
+        enet_pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", ElasticNet(alpha=0.01, l1_ratio=0.5, random_state=RANDOM_STATE, max_iter=5000))
+        ])
+        enet_pipe.fit(X_train, y_train)
+        pred_enet = np.clip(enet_pipe.predict(X_test), -1, 25)  # clip in log space
+        results.append({"Model": "ElasticNet (Scaled, Clipped)", **evaluate_predictions(y_test, pred_enet)})
 
     # ── 5. Random Forest ──
-    logger.info("Training Random Forest...")
-    rf = RandomForestRegressor(n_estimators=200, max_depth=15, min_samples_leaf=20,
-                               random_state=RANDOM_STATE, n_jobs=-1)
-    rf.fit(X_train, y_train)
-    pred_rf = rf.predict(X_test)
-    results.append({"Model": "Random Forest", **evaluate_predictions(y_test, pred_rf)})
-    logger.info(f"Random Forest: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+    if "rf" in models_to_run:
+        logger.info("Training Random Forest...")
+        rf = RandomForestRegressor(n_estimators=200, max_depth=15, min_samples_leaf=20,
+                                   random_state=RANDOM_STATE, n_jobs=-1)
+        rf.fit(X_train, y_train)
+        pred_rf = rf.predict(X_test)
+        results.append({"Model": "Random Forest", **evaluate_predictions(y_test, pred_rf)})
+        logger.info(f"Random Forest: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
 
     res_df = pd.DataFrame(results).sort_values("sMAPE (%)")
     logger.info("\nV3 Results (sorted by sMAPE):")
@@ -461,7 +483,9 @@ def run_ml_models(df_30d: pd.DataFrame) -> pd.DataFrame:
     return res_df
 
 if __name__ == "__main__":
+    import sys
     if os.path.exists(PROCESSED_VIDEO_30D):
         df_30d = pd.read_parquet(PROCESSED_VIDEO_30D)
+        sel = sys.argv[1] if len(sys.argv) > 1 else "best"
         run_spearman_analysis(df_30d)
-        run_ml_models(df_30d)
+        run_ml_models(df_30d, model_selection=sel)
