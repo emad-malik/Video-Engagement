@@ -12,6 +12,7 @@ from src.dashboard_backend import (
     TIER_DEFINITIONS,
     classify_virality_tier
 )
+from src.creator_strategy import generate_and_save_strategy_bundle
 from src.config import PROCESSED_VIDEO_30D
 
 # ────────────────────────────────────────────────────────────────
@@ -145,6 +146,10 @@ st.markdown("""
 def get_bundle():
     return load_bundle()
 
+@st.cache_resource(show_spinner="Loading creator strategy insights...")
+def get_strategy():
+    return generate_and_save_strategy_bundle()
+
 @st.cache_data(show_spinner=False)
 def get_sample_data():
     if os.path.exists(PROCESSED_VIDEO_30D):
@@ -154,8 +159,9 @@ def get_sample_data():
 
 try:
     bundle = get_bundle()
+    strat_bundle = get_strategy()
 except Exception as e:
-    st.error(f"Unable to load predictive models: {e}")
+    st.error(f"Unable to load predictive models and strategy bundle: {e}")
     st.stop()
 
 # ────────────────────────────────────────────────────────────────
@@ -163,9 +169,9 @@ except Exception as e:
 # ────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="header-box">
-    <div class="header-title">TikTok Video Performance Planner</div>
+    <div class="header-title">TikTok Video Performance & Creator Strategy Planner</div>
     <div class="header-subtitle">
-        Plan video length, test opening hooks, estimate 30-day views, and get clear guidance on when to put paid ad spend behind a video.
+        Plan video length, test opening hooks, estimate 30-day views, optimize posting cadence, and convert viral views into long-term followers.
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -173,9 +179,10 @@ st.markdown("""
 # ────────────────────────────────────────────────────────────────
 # Tabs Navigation
 # ────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Draft Video Planner",
     "Live Video Check (Day 3)",
+    "Creator Growth Strategy",
     "Compare Video Ideas",
     "Past Videos Library",
     "How the Model Works"
@@ -468,9 +475,282 @@ with tab2:
     st.plotly_chart(fig_live, use_container_width=True)
 
 # ────────────────────────────────────────────────────────────────
-# TAB 3: COMPARE VIDEO IDEAS
+# TAB 3: CREATOR GROWTH STRATEGY (Longitudinal Insights A to D)
 # ────────────────────────────────────────────────────────────────
 with tab3:
+    st.subheader("Longitudinal Creator Strategy")
+    st.caption("Strategic insights derived from tracking 1,800+ creators over 6 months and 6,000,000+ daily engagement snapshots.")
+
+    strat_section = st.radio(
+        "Select Strategy Focus Area:",
+        [
+            "Follower Conversion vs. Empty Views",
+            "Posting Cadence & Consistency",
+            "Trend-Following & Hashtag Strategy",
+            "30-Day Trajectory Archetypes (Evergreen vs. Flash)"
+        ],
+        horizontal=True
+    )
+
+    st.markdown("---")
+
+    # ── Section A: Follower Conversion vs. Empty Views ──
+    if strat_section == "Follower Conversion vs. Empty Views":
+        st.markdown("#### Converting Views into Long-Term Followers")
+        st.markdown("""
+        Not all views are equal. Some categories generate high vanity view counts from casual scrollers, but bring in very few followers. 
+        Other categories create deep loyalty and convert viewers into account followers at a very high rate.
+        """)
+
+        p_a = strat_bundle["point_a"]
+        df_conv = pd.DataFrame(p_a["topic_conversion"])
+
+        col_a1, col_a2 = st.columns([1.3, 1], gap="large")
+
+        with col_a1:
+            fig_conv = px.bar(
+                df_conv,
+                x="median_conversion",
+                y="clean_topic",
+                orientation="h",
+                color="median_conversion",
+                color_continuous_scale="Teal",
+                labels={"median_conversion": "Followers Gained per 10,000 Views", "clean_topic": "Content Category"}
+            )
+            fig_conv.update_layout(
+                yaxis=dict(autorange="reversed"),
+                height=380,
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#161b22",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_conv, use_container_width=True)
+
+        with col_a2:
+            st.markdown("##### Key Strategy Takeaways")
+            st.markdown(f"""
+            <div class="card" style="border-left: 3px solid #38bdf8;">
+                <div style="font-weight: 700; color: #f0f6fc; margin-bottom: 6px;">Top Audience-Building Categories</div>
+                <div style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">
+                    <b>Cooking & Food</b> ({df_conv.iloc[0]['median_conversion']} followers/10k views) and 
+                    <b>Life Hacks & Growth</b> ({df_conv.iloc[2]['median_conversion']} followers/10k views) have the highest conversion efficiency. 
+                    Viewers save and follow for recurring utility.
+                </div>
+            </div>
+            <div class="card" style="border-left: 3px solid #facc15;">
+                <div style="font-weight: 700; color: #f0f6fc; margin-bottom: 6px;">Low Conversion Caution</div>
+                <div style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">
+                    <b>Shopping & Product Demos</b> ({df_conv.iloc[-1]['median_conversion']} followers/10k views) converts at less than half the platform average. 
+                    People watch product reviews for the product, not the creator.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Duration vs conversion table
+            df_dur_conv = pd.DataFrame(p_a["duration_conversion"])
+            st.markdown("##### Video Length vs. Follower Conversion")
+            st.dataframe(df_dur_conv.rename(columns={
+                "duration_bucket": "Video Length",
+                "median_conversion": "Followers per 10k Views",
+                "median_views": "Median Views"
+            }), use_container_width=True)
+
+    # ── Section B: Posting Cadence & Consistency ──
+    elif strat_section == "Posting Cadence & Consistency":
+        st.markdown("#### How Often Should Your Team Post?")
+        st.markdown("""
+        How frequently should creators post to maximize account growth without burning out or splitting their audience?
+        """)
+
+        p_b = strat_bundle["point_b"]
+        df_cadence = pd.DataFrame(p_b["cadence_summary"])
+
+        col_b1, col_b2 = st.columns([1.2, 1], gap="large")
+
+        with col_b1:
+            fig_cad = px.bar(
+                df_cadence,
+                x="cadence_bucket",
+                y="median_views_per_video",
+                labels={"cadence_bucket": "Posting Cadence", "median_views_per_video": "Median Views per Video"},
+                color="median_views_per_video",
+                color_continuous_scale="Purples"
+            )
+            fig_cad.update_layout(
+                height=350,
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#161b22",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_cad, use_container_width=True)
+
+        with col_b2:
+            st.markdown("##### Cadence & Burnout Insights")
+            st.markdown("""
+            <div class="card" style="border-left: 3px solid #3fb950;">
+                <div style="font-weight: 700; color: #f0f6fc; margin-bottom: 6px;">The Consistency Sweet Spot</div>
+                <div style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">
+                    <b>4 to 7 videos per week (~1 post per day)</b> generates the highest total 6-month follower growth while keeping per-video views strong.
+                </div>
+            </div>
+            <div class="card" style="border-left: 3px solid #f85149;">
+                <div style="font-weight: 700; color: #f0f6fc; margin-bottom: 6px;">The Over-Posting Trap (15+ / week)</div>
+                <div style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">
+                    Posting more than 2 videos a day (15+ per week) causes <b>view cannibalization</b>. 
+                    The TikTok feed splits your viewers, and average views per video drop significantly.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("##### Cadence Performance Summary")
+        st.dataframe(df_cadence.rename(columns={
+            "cadence_bucket": "Weekly Cadence",
+            "creators_count": "Creators Analyzed",
+            "median_views_per_video": "Median Views / Video",
+            "mean_views_per_video": "Average Views (Viral Lift)",
+            "median_follower_gain": "6-Month Follower Gain"
+        }), use_container_width=True)
+
+    # ── Section C: Trend-Following & Hashtag Strategy ──
+    elif strat_section == "Trend-Following & Hashtag Strategy":
+        st.markdown("#### The Trend-Following Payoff: Hashtags & Audio")
+        st.markdown("""
+        Does trend-following actually pay off? Evidence shows that jumping on trends has sharp diminishing returns if not timed properly.
+        """)
+
+        p_c = strat_bundle["point_c"]
+        df_ht = pd.DataFrame(p_c["hashtag_summary"])
+        df_mus = pd.DataFrame(p_c["music_summary"])
+
+        col_c1, col_c2 = st.columns(2, gap="large")
+
+        with col_c1:
+            st.markdown("##### Hashtag Density vs. Average Views")
+            fig_ht = px.bar(
+                df_ht,
+                x="hashtag_bucket",
+                y="mean_views",
+                labels={"hashtag_bucket": "Number of Hashtags", "mean_views": "Average Views"},
+                color="mean_views",
+                color_continuous_scale="Blues"
+            )
+            fig_ht.update_layout(
+                height=320,
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#161b22",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_ht, use_container_width=True)
+
+            st.caption("Videos with 3 to 5 targeted hashtags balance discovery without triggering algorithmic spam dampening.")
+
+        with col_c2:
+            st.markdown("##### Audio Selection Performance")
+            fig_mus = px.bar(
+                df_mus,
+                x="music_category",
+                y="median_views",
+                labels={"music_category": "Audio Type", "median_views": "Median Views"},
+                color="median_views",
+                color_continuous_scale="Teal"
+            )
+            fig_mus.update_layout(
+                height=320,
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#161b22",
+                coloraxis_showscale=False
+            )
+            st.plotly_chart(fig_mus, use_container_width=True)
+
+            st.caption("Original audio builds higher audience engagement, while trending recommended sounds help early discovery.")
+
+        st.markdown("##### Practical Rules for the Content Team")
+        st.markdown("""
+        - **The 3–5 Hashtag Rule**: Use 1 broad category tag (e.g. `#TikTokFood`), 2 niche specific tags (e.g. `#AirFryerRecipe`), and 1 brand tag. Avoid tag stuffing (>10 tags).
+        - **The 48-Hour Wave Rule**: Only jump on trending sounds if you can post within the first 48 hours of the trend rising. Once an audio track is saturated, original audio outperforms it in retention.
+        """)
+
+    # ── Section D: 30-Day Trajectory Decay Archetypes ──
+    elif strat_section == "30-Day Trajectory Archetypes (Evergreen vs. Flash)":
+        st.markdown("#### 30-Day Trajectory Decay Curves")
+        st.markdown("""
+        How do videos accumulate views across their first month? All videos fall into 3 distinct trajectory archetypes:
+        """)
+
+        p_d = strat_bundle["point_d"]
+        shares = p_d["archetype_shares"]
+
+        # Share Cards
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            st.markdown(f"""
+            <div class="card" style="border-top: 3px solid #f85149;">
+                <div class="card-label">Flash Burn (Fast Decay)</div>
+                <div class="card-value">{shares.get('Flash Burn (Fast Decay)', 61.0)}%</div>
+                <div class="card-hint">80%+ of views occur in first 72 hours, then flatlines.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with sc2:
+            st.markdown(f"""
+            <div class="card" style="border-top: 3px solid #58a6ff;">
+                <div class="card-label">Steady Organic Growth</div>
+                <div class="card-value">{shares.get('Steady Organic (Balanced)', 33.0)}%</div>
+                <div class="card-hint">Consistent organic circulation through Day 30.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with sc3:
+            st.markdown(f"""
+            <div class="card" style="border-top: 3px solid #3fb950;">
+                <div class="card-label">Evergreen / Slow Burn</div>
+                <div class="card-value">{shares.get('Evergreen / Slow Burn (Compounding)', 6.0)}%</div>
+                <div class="card-hint">Gains over 50% of views after Day 7!</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Plot Normalized Curves
+        st.markdown("##### Normalized View Accumulation (Day 0 to 30)")
+        curves = p_d["curves"]
+        fig_curves = go.Figure()
+
+        colors = {
+            "Flash Burn (Fast Decay)": "#f85149",
+            "Steady Organic (Balanced)": "#58a6ff",
+            "Evergreen / Slow Burn (Compounding)": "#3fb950"
+        }
+
+        for arch_name, curve_data in curves.items():
+            days_x = sorted([int(k) for k in curve_data.keys()])
+            pct_y = [curve_data[d] * 100 for d in days_x]
+            fig_curves.add_trace(go.Scatter(
+                x=days_x,
+                y=pct_y,
+                mode="lines+markers",
+                name=arch_name,
+                line=dict(color=colors.get(arch_name, "#ffffff"), width=3)
+            ))
+
+        fig_curves.update_layout(
+            height=360,
+            margin=dict(l=20, r=20, t=10, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#161b22",
+            xaxis=dict(title="Days Since Post", gridcolor="#30363d", color="#8b949e"),
+            yaxis=dict(title="% of Total 30-Day Views", gridcolor="#30363d", color="#8b949e"),
+            legend=dict(orientation="h", y=1.12, x=0, font=dict(color="#c9d1d9")),
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_curves, use_container_width=True)
+
+        st.caption("Content Strategy Insight: Flash-Burn content delivers immediate buzz, but building an Evergreen backlog (how-to guides, recipes) compounds views steadily in the background.")
+
+# ────────────────────────────────────────────────────────────────
+# TAB 4: COMPARE VIDEO IDEAS
+# ────────────────────────────────────────────────────────────────
+with tab4:
     st.subheader("Compare Video Ideas (What to Film First)")
     st.caption("If you have several video ideas planned for this week, compare them side-by-side to prioritize which ones to film and publish first.")
 
@@ -541,9 +821,9 @@ with tab3:
         st.dataframe(out_df, use_container_width=True)
 
 # ────────────────────────────────────────────────────────────────
-# TAB 4: PAST VIDEOS LIBRARY
+# TAB 5: PAST VIDEOS LIBRARY
 # ────────────────────────────────────────────────────────────────
-with tab4:
+with tab5:
     st.subheader("Past Videos Library")
     st.caption("Explore historical TikTok videos from the 157,000+ benchmark repository to see what kind of lengths and categories generate the highest views.")
 
@@ -585,9 +865,9 @@ with tab4:
         st.info("Historical data file not loaded.")
 
 # ────────────────────────────────────────────────────────────────
-# TAB 5: HOW THE MODEL WORKS
+# TAB 6: HOW THE MODEL WORKS
 # ────────────────────────────────────────────────────────────────
-with tab5:
+with tab6:
     st.subheader("How the Predictive Model Works")
     st.caption("A simple explanation of the factors driving video reach on TikTok.")
 
