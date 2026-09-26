@@ -24,8 +24,8 @@ def parse_args():
     parser.add_argument("--train", action="store_true", help="Train and evaluate classical & ML models")
     parser.add_argument("--all", action="store_true", help="Execute full end-to-end pipeline")
     parser.add_argument("--model", type=str, default="best",
-                        choices=["best", "all", "lgbm_mape", "lgbm_quantile", "lgbm_mse", "elasticnet", "rf"],
-                        help="Select which ML model to train (default: 'best' -> LightGBM MAPE)")
+                        choices=["best", "all", "lgbm_mape", "lgbm_quantile", "lgbm_mse", "xgboost", "xgb_mape", "xgb_optuna", "xgb_mse", "dl", "elasticnet", "rf"],
+                        help="Select which ML model to train (choices: 'best', 'xgboost', 'xgb_optuna', 'xgb_mse', 'dl', 'all', etc.)")
     parser.add_argument("--skip-classical", action="store_true",
                         help="Skip aggregate classical models (Prophet/SARIMA) for rapid ML iteration")
     return parser.parse_args()

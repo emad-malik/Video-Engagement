@@ -289,9 +289,11 @@ def run_ml_models(df_30d: pd.DataFrame, model_selection: str = "best") -> pd.Dat
     results = []
 
     # Map model selection aliases
-    valid_models = {"lgbm_mape", "lgbm_quantile", "lgbm_mse", "elasticnet", "rf"}
+    valid_models = {"lgbm_mape", "lgbm_quantile", "lgbm_mse", "elasticnet", "rf", "xgboost", "xgb_mape", "xgb_optuna", "xgb_mse", "dl"}
     if model_selection in ("best", "lgbm_mape"):
         models_to_run = {"lgbm_mape"}
+    elif model_selection in ("xgboost", "xgb", "xgb_mape"):
+        models_to_run = {"xgb_mape"}
     elif model_selection == "all":
         models_to_run = valid_models
     elif isinstance(model_selection, (list, set, tuple)):
@@ -417,6 +419,206 @@ def run_ml_models(df_30d: pd.DataFrame, model_selection: str = "best") -> pd.Dat
         results.append({"Model": "Random Forest", **evaluate_predictions(y_test, pred_rf)})
         logger.info(f"Random Forest: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
 
+    # ── 6. XGBoost with MAE Loss (reg:absoluteerror) ──
+    xgb_best_model = None
+    if any(m in models_to_run for m in ("xgboost", "xgb_mape")):
+        try:
+            import xgboost as xgb
+            logger.info("Training XGBoost Regressor (MAE Loss, hist)...")
+            
+            # Autodetect GPU if available
+            gpu_available = False
+            try:
+                import torch
+                gpu_available = torch.cuda.is_available()
+            except ImportError:
+                pass
+            xgb_dev = "cuda" if gpu_available else "cpu"
+            logger.info(f"XGBoost target device: {xgb_dev.upper()}")
+
+            xgb_mae = xgb.XGBRegressor(
+                objective="reg:absoluteerror",
+                n_estimators=500,
+                learning_rate=0.05,
+                max_depth=6,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                tree_method="hist",
+                device=xgb_dev,
+                random_state=RANDOM_STATE,
+                n_jobs=-1 if xgb_dev == "cpu" else None
+            )
+            xgb_mae.fit(X_train, y_train)
+            pred_xgb = xgb_mae.predict(X_test)
+            xgb_best_model = xgb_mae
+            results.append({"Model": "XGBoost (MAE obj)", **evaluate_predictions(y_test, pred_xgb)})
+            logger.info(f"XGBoost MAE obj: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+        except Exception as e:
+            logger.warning(f"XGBoost MAE failed: {e}")
+
+    # ── 7. XGBoost with Optuna Hyperparameter Optimization ──
+    if "xgb_optuna" in models_to_run:
+        try:
+            import xgboost as xgb
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            logger.info("Starting Optuna hyperparameter optimization for XGBoost (30 trials)...")
+
+            val_cut = int(len(X_train) * 0.85)
+            X_tr, y_tr = X_train.iloc[:val_cut], y_train.iloc[:val_cut]
+            X_val, y_val = X_train.iloc[val_cut:], y_train.iloc[val_cut:]
+            y_val_orig = np.expm1(y_val.values)
+
+            gpu_available = False
+            try:
+                import torch
+                gpu_available = torch.cuda.is_available()
+            except ImportError:
+                pass
+            xgb_dev = "cuda" if gpu_available else "cpu"
+
+            def xgb_objective(trial):
+                params = {
+                    "objective": "reg:absoluteerror",
+                    "n_estimators": trial.suggest_int("n_estimators", 200, 800),
+                    "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+                    "max_depth": trial.suggest_int("max_depth", 4, 10),
+                    "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+                    "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
+                    "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+                    "min_child_weight": trial.suggest_int("min_child_weight", 1, 15),
+                    "tree_method": "hist",
+                    "device": xgb_dev,
+                    "random_state": RANDOM_STATE
+                }
+                m = xgb.XGBRegressor(**params)
+                m.fit(X_tr, y_tr)
+                pred = np.clip(np.expm1(m.predict(X_val)), 0, None)
+                return smape(y_val_orig, pred)
+
+            study = optuna.create_study(direction="minimize")
+            study.optimize(xgb_objective, n_trials=30, show_progress_bar=False)
+            logger.info(f"Optuna XGBoost best sMAPE: {study.best_value:.2f}% | params: {study.best_params}")
+
+            best_xgb = xgb.XGBRegressor(**study.best_params, objective="reg:absoluteerror",
+                                         tree_method="hist", device=xgb_dev, random_state=RANDOM_STATE)
+            best_xgb.fit(X_train, y_train)
+            pred_opt = best_xgb.predict(X_test)
+            xgb_best_model = best_xgb
+            results.append({"Model": "XGBoost (Optuna Tuned)", **evaluate_predictions(y_test, pred_opt)})
+            logger.info(f"XGBoost Optuna: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+        except Exception as e:
+            logger.warning(f"XGBoost Optuna search failed: {e}")
+
+    # ── 8. XGBoost Standard MSE (Comparison) ──
+    if "xgb_mse" in models_to_run:
+        try:
+            import xgboost as xgb
+            logger.info("Training XGBoost standard MSE...")
+            xgb_mse = xgb.XGBRegressor(
+                objective="reg:squarederror",
+                n_estimators=500,
+                learning_rate=0.05,
+                max_depth=6,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                tree_method="hist",
+                random_state=RANDOM_STATE,
+                n_jobs=-1
+            )
+            xgb_mse.fit(X_train, y_train)
+            pred_mse = xgb_mse.predict(X_test)
+            results.append({"Model": "XGBoost (MSE obj)", **evaluate_predictions(y_test, pred_mse)})
+            logger.info(f"XGBoost MSE: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+        except Exception as e:
+            logger.warning(f"XGBoost MSE failed: {e}")
+
+    # ── 9. Deep Learning PyTorch Tabular Model ──
+    if "dl" in models_to_run:
+        try:
+            import torch
+            import torch.nn as nn
+            from torch.utils.data import Dataset, DataLoader
+
+            logger.info("Training Deep Learning Tabular ResNet (PyTorch)...")
+            dl_device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"PyTorch target device: {dl_device.upper()}")
+
+            scaler = StandardScaler()
+            X_tr_s = scaler.fit_transform(X_train)
+            X_te_s = scaler.transform(X_test)
+
+            class TabDataset(Dataset):
+                def __init__(self, X, y):
+                    self.X = torch.tensor(X, dtype=torch.float32)
+                    self.y = torch.tensor(y.values if hasattr(y, 'values') else y, dtype=torch.float32).unsqueeze(1)
+                def __len__(self):
+                    return len(self.X)
+                def __getitem__(self, idx):
+                    return self.X[idx], self.y[idx]
+
+            tr_loader = DataLoader(TabDataset(X_tr_s, y_train), batch_size=512, shuffle=True)
+            te_loader = DataLoader(TabDataset(X_te_s, y_test), batch_size=1024, shuffle=False)
+
+            class TabResBlock(nn.Module):
+                def __init__(self, dim, dropout=0.2):
+                    super().__init__()
+                    self.fc1 = nn.Linear(dim, dim)
+                    self.norm1 = nn.LayerNorm(dim)
+                    self.act1 = nn.SiLU()
+                    self.fc2 = nn.Linear(dim, dim)
+                    self.norm2 = nn.LayerNorm(dim)
+                    self.act2 = nn.SiLU()
+                    self.drop = nn.Dropout(dropout)
+                def forward(self, x):
+                    res = x
+                    out = self.drop(self.act1(self.norm1(self.fc1(x))))
+                    out = self.norm2(self.fc2(out))
+                    return self.act2(out + res)
+
+            class TabNet(nn.Module):
+                def __init__(self, in_dim, h_dim=256):
+                    super().__init__()
+                    self.inp = nn.Sequential(nn.Linear(in_dim, h_dim), nn.LayerNorm(h_dim), nn.SiLU(), nn.Dropout(0.2))
+                    self.b1 = TabResBlock(h_dim, 0.2)
+                    self.b2 = TabResBlock(h_dim, 0.2)
+                    self.head = nn.Sequential(nn.Linear(h_dim, h_dim // 2), nn.SiLU(), nn.Linear(h_dim // 2, 1))
+                def forward(self, x):
+                    h = self.inp(x)
+                    h = self.b1(h)
+                    h = self.b2(h)
+                    return self.head(h)
+
+            net = TabNet(X_train.shape[1], 256).to(dl_device)
+            criterion = nn.SmoothL1Loss(beta=1.0)
+            opt = torch.optim.AdamW(net.parameters(), lr=1e-3, weight_decay=1e-4)
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=30)
+
+            for epoch in range(30):
+                net.train()
+                for bx, by in tr_loader:
+                    bx, by = bx.to(dl_device), by.to(dl_device)
+                    opt.zero_grad()
+                    loss = criterion(net(bx), by)
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(net.parameters(), 2.0)
+                    opt.step()
+                sched.step()
+
+            net.eval()
+            preds_dl = []
+            with torch.no_grad():
+                for bx, _ in te_loader:
+                    preds_dl.append(net(bx.to(dl_device)).cpu().numpy().flatten())
+            pred_dl_all = np.concatenate(preds_dl)
+            results.append({"Model": "PyTorch Tabular ResNet", **evaluate_predictions(y_test, pred_dl_all)})
+            logger.info(f"PyTorch Tabular ResNet: sMAPE = {results[-1]['sMAPE (%)']:.2f}%")
+        except ImportError:
+            logger.warning("PyTorch ('torch') is not installed in local environment. Run on Colab GPU or 'pip install torch'.")
+        except Exception as e:
+            logger.warning(f"PyTorch Deep Learning training failed: {e}")
+
     res_df = pd.DataFrame(results).sort_values("sMAPE (%)")
     logger.info("\nV3 Results (sorted by sMAPE):")
     print(res_df.to_string(index=False))
@@ -466,14 +668,16 @@ def run_ml_models(df_30d: pd.DataFrame, model_selection: str = "best") -> pd.Dat
                 logger.info(f"  CV {col}: {cv_df[col].mean():.2f} +/- {cv_df[col].std():.2f}")
 
     # ── Feature Importance ──
-    if lgb_mape is not None and hasattr(lgb_mape, "feature_importances_"):
-        fi = pd.Series(lgb_mape.feature_importances_, index=X_train.columns)
+    imp_model = lgb_mape if lgb_mape is not None else xgb_best_model
+    model_lbl = "LightGBM MAPE" if lgb_mape is not None else "XGBoost"
+    if imp_model is not None and hasattr(imp_model, "feature_importances_"):
+        fi = pd.Series(imp_model.feature_importances_, index=X_train.columns)
         fi = fi.sort_values(ascending=False).head(25).reset_index()
         fi.columns = ["feature", "importance"]
 
         fig, ax = plt.subplots(figsize=(10, 8))
         sns.barplot(x="importance", y="feature", data=fi, hue="feature", palette="mako", legend=False, ax=ax)
-        ax.set_title("Top 25 Feature Importances V3 (LightGBM MAPE)", fontsize=13, fontweight="bold", pad=12)
+        ax.set_title(f"Top 25 Feature Importances V3 ({model_lbl})", fontsize=13, fontweight="bold", pad=12)
         ax.set_xlabel("Relative Importance")
         plt.tight_layout()
         fig.savefig(os.path.join(PLOTS_DIR, "10_feature_importance_v3.png"))
